@@ -50,8 +50,8 @@ func ZipDir(dst, dir string) (err error) {
 	w := zip.NewWriter(fz)
 	defer w.Close()
 	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if info.IsDir() {
-			return nil
+		if info.IsDir() || err != nil {
+			return err
 		}
 		fDest, err := w.Create(path[len(dir)+1:])
 		if err != nil {

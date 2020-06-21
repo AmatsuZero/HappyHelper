@@ -22,7 +22,7 @@ func TestFetchPage(t *testing.T) {
 		t.Fail()
 	}
 	homedir := myself.HomeDir
-	output := filepath.FromSlash("Desktop/output")
+	output := filepath.Join("Desktop", "output")
 	err = snapShot.Download(filepath.Join(homedir, output))
 	if err != nil {
 		t.Fatal(err)
