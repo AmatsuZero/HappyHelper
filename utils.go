@@ -9,7 +9,8 @@ import (
 	"strings"
 )
 
-const DefaultUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36 OPR/67.0.3575.115"
+const OverLimitError = "Over Limit"
+const OverLimitErrorPage = "https://ehgt.org/g/509.gif"
 
 /// 创建临时文件夹
 func MKTmpDirIfNotExist(title string) (string, error) {

@@ -65,6 +65,10 @@ func (eh *EHParser) Parse(src string) error {
 	return nil
 }
 
+func (eh *EHParser) parseDetailPage(src string) {
+
+}
+
 func (eh *EHParser) requestSinglePage(src string) rxgo.Observable {
 	item := rxgo.Defer([]rxgo.Producer{func(ctx context.Context, next chan<- rxgo.Item) {
 		resp, err := eh.client.Get(src)
@@ -116,7 +120,7 @@ func (eh *EHParser) parseSingleDetailPage(doc *goquery.Document) {
 		if item.E != nil {
 			fmt.Printf("获取图片地址失败 : %v\n", item.E)
 			continue
-		} else { // TODO：如果超出下载配额，可能下载链接都是509错误页，待解决
+		} else {
 			eh.links[item.V.(string)] = true
 		}
 	}
@@ -146,6 +150,9 @@ func (eh *EHParser) visitSubPage(ctx context.Context, i interface{}) (interface{
 	}
 	// 找到图片
 	src, _ := doc.Find("div[id=i3] a img").First().Attr("src")
+	if src == OverLimitErrorPage { // 判断是否是509错误页
+		err = fmt.Errorf("%v", OverLimitError)
+	}
 	return src, err
 }
 
@@ -176,6 +183,9 @@ func (eh *EHParser) downloadPic(src, dst string) rxgo.Observable {
 }
 
 func (eh *EHParser) retryStrategy(err error) bool {
+	if err.Error() == OverLimitError { // TODO：如果超出下载配额，可能下载链接都是509错误页，待解决
+		return false
+	}
 	return true
 }
 
@@ -211,8 +221,7 @@ func (eh *EHParser) Export(path string) error {
 		path = filepath.Join(path, eh.title+".zip")
 	}
 	fmt.Println("正在创建压缩包")
-	// 创建压缩包
-	err := ZipDir(path, eh.tmpDir)
+	err := ZipDir(path, eh.tmpDir) // 创建压缩包
 	if err != nil {
 		return err
 	}
