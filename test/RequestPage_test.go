@@ -29,11 +29,11 @@ func TestDownloadSinglePage(t *testing.T) {
 	}
 }
 
-func TestParseGallery(t *testing.T) {
+func TestParseGrid(t *testing.T) {
 	t.Log(os.Getenv("https_proxy"))
 	parser := HappyHelper.NewEHParser()
 	snapShot := HappyHelper.NewSnapShot(parser)
-	err := snapShot.Parse("https://e-hentai.org/?f_search=Complet%27s")
+	err := snapShot.Parse("https://e-hentai.org")
 	if err != nil {
 		t.Fatal(err)
 	}

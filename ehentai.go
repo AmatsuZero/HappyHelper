@@ -8,7 +8,69 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
+	"time"
 )
+
+type DisplayMode int
+
+const (
+	DisplayModeUnknown             = iota
+	DisplayModeMinimal DisplayMode = iota
+	DisplayModeMinimalPlus
+	DisplayModeCompact
+	DisplayModeExtended
+	DisplayModeThumbnail
+)
+
+func NewDisplayMode(t string) (m DisplayMode) {
+	switch t {
+	case "Minimal":
+		m = DisplayModeMinimal
+	case "Minimal+":
+		m = DisplayModeMinimalPlus
+	case "Compact":
+		m = DisplayModeCompact
+	case "Extended":
+		m = DisplayModeExtended
+	case "Thumbnail":
+		m = DisplayModeThumbnail
+	default:
+		m = DisplayModeUnknown
+	}
+	return
+}
+
+func (mode DisplayMode) patternString() string {
+	switch mode {
+	case DisplayModeMinimal:
+	case DisplayModeMinimalPlus:
+		return "table[class='itg gltm'] td[class='gl3m glname'] a"
+	case DisplayModeCompact:
+		return "table[class='itg gltc'] td[class='gl3c glname'] a"
+	case DisplayModeExtended:
+		return "table[class='itg glte'] td[class=gl3e]+a"
+	case DisplayModeThumbnail:
+		return "table[class='itg gltd'] div[class=gl1t] div[class=gl3t] a"
+	default:
+		return ""
+	}
+	return ""
+}
+
+func (mode DisplayMode) findPages(doc *goquery.Document) rxgo.Observable {
+	item := rxgo.Create([]rxgo.Producer{func(ctx context.Context, next chan<- rxgo.Item) {
+		doc.Find(mode.patternString()).Each(func(i int, selection *goquery.Selection) {
+			src, _ := selection.Attr("href")
+			next <- rxgo.Of(src)
+		})
+	}})
+	item = item.Filter(func(i interface{}) bool {
+		s, ok := i.(string)
+		return ok && len(s) > 0
+	})
+	return item
+}
 
 type EHParser struct {
 	client *http.Client
@@ -17,8 +79,10 @@ type EHParser struct {
 
 func NewEHParser() *EHParser {
 	return &EHParser{
-		client: &http.Client{},
-		links:  make(map[string]string),
+		client: &http.Client{
+			Timeout: time.Second * 2,
+		},
+		links: make(map[string]string),
 	}
 }
 
@@ -28,12 +92,45 @@ func (eh *EHParser) Parse(src string) error {
 		return err
 	}
 	fmt.Println("开始解析：" + u.String())
-	return eh.parseGallery(u.String())
+	pathSegments := strings.Split(u.Path, "/")
+	set := NewOrderStringSet(pathSegments)
+	if set.Contains("g") { // 表明是画廊模式
+		return eh.parseGallery(u.String())
+	}
+	// 按照合集去解析
+	return eh.parseGrid(src)
+}
+
+func (eh *EHParser) parseGrid(src string) error {
+	fmt.Println("解析合集：" + src)
+	var doc *goquery.Document
+	for item := range eh.requestSinglePage(src).First().Observe() {
+		if item.E != nil {
+			return item.E
+		} else {
+			doc = item.V.(*goquery.Document)
+		}
+	}
+	if doc == nil {
+		return fmt.Errorf("parse failed")
+	}
+	// 找到当前的展示模式
+	pattern := "div[id=dms] select option[selected]"
+	displayMode := NewDisplayMode(doc.Find(pattern).First().Text())
+	for item := range displayMode.findPages(doc).Observe() {
+		link := item.V.(string)
+		fmt.Println(link)
+		//if err := eh.parseGallery(link); err != nil {
+		//	fmt.Printf("解析页面 %v 失败：%v\n", link, err)
+		//}
+	}
+	return nil
 }
 
 func (eh *EHParser) parseGallery(src string) error {
+	fmt.Println("解析画廊：" + src)
 	var doc *goquery.Document
-	for item := range eh.requestSinglePage(src).Retry(3, eh.retryStrategy).First().Observe() {
+	for item := range eh.requestSinglePage(src).First().Observe() {
 		if item.E != nil {
 			return item.E
 		} else {
@@ -60,7 +157,7 @@ func (eh *EHParser) parseGallery(src string) error {
 	for _, v := range obs {
 		links = append(links, v)
 	}
-	for page := range rxgo.Merge(links).Observe() {
+	for page := range rxgo.Concat(links).Observe() {
 		if page.E != nil {
 			fmt.Printf("请求详情页失败 : %v\n", page.E)
 			continue
@@ -135,7 +232,7 @@ func (eh *EHParser) parseSingleDetailPage(doc *goquery.Document) {
 	}
 }
 
-/// 访问页面并获取图片地址，这里为了避免IP被Ban，采用逐个访问的方式
+/// 访问页面并获取图片地址
 func (eh *EHParser) visitSubPage(ctx context.Context, i interface{}) (interface{}, error) {
 	link := i.(string)
 	resp, err := eh.client.Get(link)
@@ -157,23 +254,29 @@ func (eh *EHParser) visitSubPage(ctx context.Context, i interface{}) (interface{
 	return src, err
 }
 
-/// 下载图片，这里为了避免IP被Ban，采用逐个访问的方式
+/// 下载图片
 func (eh *EHParser) downloadPic(src, dst string) rxgo.Observable {
-	item := rxgo.Create([]rxgo.Producer{func(ctx context.Context, next chan<- rxgo.Item) {
+	item := rxgo.Defer([]rxgo.Producer{func(ctx context.Context, next chan<- rxgo.Item) {
 		addr, err := url.Parse(src)
 		if err != nil {
 			next <- rxgo.Error(err)
 			return
 		}
 		fmt.Printf("正在下载: %v\n", addr.String())
-		resp, err := eh.client.Get(addr.String())
-		defer func() { // TODO：如果超出限额，这里会重定向到这样的页面：https://pabdsvx.njxanimfdxzh.hath.network/h/80，可能会导致Crash，
-			_ = resp.Body.Close()
-		}()
+		req, err := http.NewRequest("GET", addr.String(), nil)
 		if err != nil {
 			next <- rxgo.Error(err)
 			return
 		}
+		req.Header.Set("Connection", "close") // 尝试解决 too many connections
+		resp, err := eh.client.Do(req)
+		if err != nil {
+			next <- rxgo.Error(err)
+			return
+		}
+		defer func() { // TODO：如果超出限额，这里会重定向到这样的页面：https://pabdsvx.njxanimfdxzh.hath.network/h/80，可能会导致Crash，
+			_ = resp.Body.Close()
+		}()
 		fileName := GetFileName(addr)
 		output, err := PutFile(fileName, dst, resp.Body)
 		next <- rxgo.Item{
@@ -187,6 +290,13 @@ func (eh *EHParser) downloadPic(src, dst string) rxgo.Observable {
 func (eh *EHParser) retryStrategy(err error) bool {
 	if err.Error() == OverLimitError { // TODO：如果超出下载配额，可能下载链接都是509错误页，待解决
 		return false
+	} else if e, ok := err.(*url.Error); ok {
+		switch e.Err.Error() {
+		case "Too many open connections": // TODO: 待解决
+			return true
+		case "EOF": // 可能超过了服务器的允许的连接数
+			return false
+		}
 	}
 	return true
 }

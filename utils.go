@@ -75,6 +75,10 @@ func ZipDir(dst, dir string) (err error) {
 
 func CleanAllTmpDirs(links map[string]string) {
 	for _, tmpDir := range links {
+		_, err := os.Stat(tmpDir)
+		if os.IsNotExist(err) { // 已经不存在了，略过
+			continue
+		}
 		if err := os.RemoveAll(tmpDir); err != nil { // 删除临时文件夹
 			fmt.Printf("删除临时文件夹失败 %v\n", err)
 		}
@@ -89,13 +93,34 @@ func ZipFiles(path string, links map[string]string) error {
 	if err != nil {
 		return err
 	}
+	// 标记已经压缩过的
+	flags := make(map[string]bool)
 	for _, tmpDir := range links {
-		path += filepath.Base(tmpDir) + ".zip"
-		fmt.Printf("正在创建压缩包: %v\n", path)
-		err := ZipDir(path, tmpDir) // 创建压缩包
-		if err != nil {
-			fmt.Printf("创建压缩包失败: %v\n", path)
+		output := filepath.Join(path, filepath.Base(tmpDir)) + ".zip"
+		if _, ok := flags[output]; ok {
+			continue
 		}
+		fmt.Printf("正在创建压缩包: %v\n", output)
+		err := ZipDir(output, tmpDir) // 创建压缩包
+		if err != nil {
+			fmt.Printf("创建压缩包失败: %v\n", output)
+		}
+		flags[output] = true
 	}
 	return nil
+}
+
+type OrderStringSet map[string]int
+
+func NewOrderStringSet(arr []string) OrderStringSet {
+	dict := make(map[string]int)
+	for i, elem := range arr {
+		dict[elem] = i
+	}
+	return dict
+}
+
+func (set OrderStringSet) Contains(value string) bool {
+	_, ok := set[value]
+	return ok
 }
