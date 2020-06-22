@@ -7,9 +7,9 @@ import (
 	"github.com/reactivex/rxgo/v2"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
-	"time"
 )
 
 type DisplayMode int
@@ -79,10 +79,8 @@ type EHParser struct {
 
 func NewEHParser() *EHParser {
 	return &EHParser{
-		client: &http.Client{
-			Timeout: time.Second * 2,
-		},
-		links: make(map[string]string),
+		client: &http.Client{},
+		links:  make(map[string]string),
 	}
 }
 
@@ -103,16 +101,9 @@ func (eh *EHParser) Parse(src string) error {
 
 func (eh *EHParser) parseGrid(src string) error {
 	fmt.Println("解析合集：" + src)
-	var doc *goquery.Document
-	for item := range eh.requestSinglePage(src).First().Observe() {
-		if item.E != nil {
-			return item.E
-		} else {
-			doc = item.V.(*goquery.Document)
-		}
-	}
-	if doc == nil {
-		return fmt.Errorf("parse failed")
+	doc, err := eh.requestSinglePage(src)
+	if err != nil {
+		return err
 	}
 	// 找到当前的展示模式
 	pattern := "div[id=dms] select option[selected]"
@@ -120,44 +111,70 @@ func (eh *EHParser) parseGrid(src string) error {
 	for item := range displayMode.findPages(doc).Observe() {
 		link := item.V.(string)
 		fmt.Println(link)
-		//if err := eh.parseGallery(link); err != nil {
-		//	fmt.Printf("解析页面 %v 失败：%v\n", link, err)
-		//}
+		if err := eh.parseGallery(link); err != nil {
+			fmt.Printf("解析页面 %v 失败：%v", link, err)
+		} else {
+			fmt.Println("解析结束")
+		}
+		fmt.Println("=========================================")
 	}
 	return nil
 }
 
+func createPageLinks(doc *goquery.Document) rxgo.Observable {
+	maxPage, err := rxgo.Create([]rxgo.Producer{func(ctx context.Context, next chan<- rxgo.Item) {
+		doc.Find("div[class=gtb] td[onclick] a").Each(func(i int, selection *goquery.Selection) {
+			src, _ := selection.Attr("href")
+			next <- rxgo.Of(src)
+		})
+	}}).Filter(func(i interface{}) bool {
+		s, ok := i.(string)
+		return ok && len(s) > 0
+	}).Map(func(ctx context.Context, i interface{}) (interface{}, error) {
+		addr, err := url.Parse(i.(string))
+		if err != nil {
+			return nil, err
+		}
+		p := addr.Query().Get("p")
+		return strconv.Atoi(p)
+	}).Max(func(i interface{}, i2 interface{}) int {
+		return i.(int) - i2.(int)
+	}).Get()
+	if err != nil || maxPage.V == nil {
+		return rxgo.Empty()
+	}
+	baseURL := doc.Url.Scheme + "://" + path.Join(doc.Url.Host, doc.Url.Path)
+	return rxgo.Defer([]rxgo.Producer{func(ctx context.Context, next chan<- rxgo.Item) {
+		for i := 0; i < maxPage.V.(int); i++ {
+			u, e := url.Parse(baseURL)
+			if e != nil {
+				next <- rxgo.Error(e)
+				return
+			}
+			queries := u.Query()
+			queries.Set("p", strconv.Itoa(i))
+			u.RawQuery = queries.Encode()
+			next <- rxgo.Of(u.String())
+		}
+	}})
+}
+
 func (eh *EHParser) parseGallery(src string) error {
 	fmt.Println("解析画廊：" + src)
-	var doc *goquery.Document
-	for item := range eh.requestSinglePage(src).First().Observe() {
-		if item.E != nil {
-			return item.E
-		} else {
-			doc = item.V.(*goquery.Document)
+	item, err := rxgo.Create([]rxgo.Producer{func(ctx context.Context, next chan<- rxgo.Item) {
+		doc, err := eh.requestSinglePage(src)
+		next <- rxgo.Item{
+			V: doc,
+			E: err,
 		}
+	}}).Retry(3, eh.retryStrategy).First().Get()
+	if err != nil {
+		return err
 	}
-	if doc == nil {
-		return fmt.Errorf("parse failed")
-	}
-	obs := make(map[string]rxgo.Observable)
-	// 解析当前页
-	eh.parseSingleDetailPage(doc)
-	// 检查其他页面
-	doc.Find("div[class=gtb] td[onclick] a").Each(func(i int, selection *goquery.Selection) {
-		if src, ok := selection.Attr("href"); ok {
-			// 检查是否已经添加过
-			_, ok = obs[src]
-			if !ok {
-				obs[src] = eh.requestSinglePage(src)
-			}
-		}
-	})
-	links := make([]rxgo.Observable, 0)
-	for _, v := range obs {
-		links = append(links, v)
-	}
-	for page := range rxgo.Concat(links).Observe() {
+	ob := createPageLinks(item.V.(*goquery.Document)).Map(func(ctx context.Context, i interface{}) (interface{}, error) {
+		return eh.requestSinglePage(i.(string))
+	}).Retry(3, eh.retryStrategy)
+	for page := range ob.Observe() {
 		if page.E != nil {
 			fmt.Printf("请求详情页失败 : %v\n", page.E)
 			continue
@@ -169,29 +186,24 @@ func (eh *EHParser) parseGallery(src string) error {
 	return nil
 }
 
-func (eh *EHParser) requestSinglePage(src string) rxgo.Observable {
-	item := rxgo.Defer([]rxgo.Producer{func(ctx context.Context, next chan<- rxgo.Item) {
-		resp, err := eh.client.Get(src)
-		if err != nil {
-			next <- rxgo.Error(err)
-			return
-		}
-		defer func() {
-			_ = resp.Body.Close()
-		}()
-		doc, err := goquery.NewDocumentFromReader(resp.Body)
-		if err != nil {
-			next <- rxgo.Error(err)
-			return
-		}
-		u, _ := url.Parse(src)
-		doc.Url = u
-		next <- rxgo.Item{
-			V: doc,
-			E: err,
-		}
-	}})
-	return item.Retry(3, eh.retryStrategy)
+func (eh *EHParser) requestSinglePage(src string) (*goquery.Document, error) {
+	u, err := url.Parse(src)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := eh.client.Get(src)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	d, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	d.Url = u
+	return d, err
 }
 
 func (eh *EHParser) parseSingleDetailPage(doc *goquery.Document) {
