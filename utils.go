@@ -2,6 +2,7 @@ package HappyHelper
 
 import (
 	"archive/zip"
+	"fmt"
 	"io"
 	"net/url"
 	"os"
@@ -70,4 +71,31 @@ func ZipDir(dst, dir string) (err error) {
 		return nil
 	})
 	return
+}
+
+func CleanAllTmpDirs(links map[string]string) {
+	for _, tmpDir := range links {
+		if err := os.RemoveAll(tmpDir); err != nil { // 删除临时文件夹
+			fmt.Printf("删除临时文件夹失败 %v\n", err)
+		}
+	}
+}
+
+func ZipFiles(path string, links map[string]string) error {
+	_, err := os.Stat(path)
+	if os.IsNotExist(err) { // 检查输出文件夹是否存在
+		err = os.MkdirAll(path, os.ModePerm)
+	}
+	if err != nil {
+		return err
+	}
+	for _, tmpDir := range links {
+		path += filepath.Base(tmpDir) + ".zip"
+		fmt.Printf("正在创建压缩包: %v\n", path)
+		err := ZipDir(path, tmpDir) // 创建压缩包
+		if err != nil {
+			fmt.Printf("创建压缩包失败: %v\n", path)
+		}
+	}
+	return nil
 }

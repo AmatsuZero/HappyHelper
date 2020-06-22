@@ -7,27 +7,31 @@ import (
 	"github.com/reactivex/rxgo/v2"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strconv"
 )
 
 type EHParser struct {
 	client *http.Client
-	links  map[string]bool
-	title  string
-	tmpDir string
+	links  map[string]string
 }
 
 func NewEHParser() *EHParser {
 	return &EHParser{
 		client: &http.Client{},
-		links:  make(map[string]bool),
+		links:  make(map[string]string),
 	}
 }
 
 func (eh *EHParser) Parse(src string) error {
-	fmt.Println("开始解析：" + src)
+	u, err := url.Parse(src)
+	if err != nil {
+		return err
+	}
+	fmt.Println("开始解析：" + u.String())
+	return eh.parseGallery(u.String())
+}
+
+func (eh *EHParser) parseGallery(src string) error {
 	var doc *goquery.Document
 	for item := range eh.requestSinglePage(src).Retry(3, eh.retryStrategy).First().Observe() {
 		if item.E != nil {
@@ -35,6 +39,9 @@ func (eh *EHParser) Parse(src string) error {
 		} else {
 			doc = item.V.(*goquery.Document)
 		}
+	}
+	if doc == nil {
+		return fmt.Errorf("parse failed")
 	}
 	obs := make(map[string]rxgo.Observable)
 	// 解析当前页
@@ -65,10 +72,6 @@ func (eh *EHParser) Parse(src string) error {
 	return nil
 }
 
-func (eh *EHParser) parseDetailPage(src string) {
-
-}
-
 func (eh *EHParser) requestSinglePage(src string) rxgo.Observable {
 	item := rxgo.Defer([]rxgo.Producer{func(ctx context.Context, next chan<- rxgo.Item) {
 		resp, err := eh.client.Get(src)
@@ -91,8 +94,7 @@ func (eh *EHParser) requestSinglePage(src string) rxgo.Observable {
 			E: err,
 		}
 	}})
-	item.Retry(3, eh.retryStrategy)
-	return item
+	return item.Retry(3, eh.retryStrategy)
 }
 
 func (eh *EHParser) parseSingleDetailPage(doc *goquery.Document) {
@@ -116,12 +118,19 @@ func (eh *EHParser) parseSingleDetailPage(doc *goquery.Document) {
 	})
 	links = links.Map(eh.visitSubPage)       // 获取图片地址
 	links = links.Retry(3, eh.retryStrategy) // 设置重试
+	// 找到标题
+	title := doc.Find("head title").First().Text()
+	tmpDir, err := MKTmpDirIfNotExist(title)
+	if err != nil {
+		fmt.Printf("创建临时文件夹失败 %v\n", err)
+		return
+	}
 	for item := range links.Observe() {
 		if item.E != nil {
 			fmt.Printf("获取图片地址失败 : %v\n", item.E)
 			continue
 		} else {
-			eh.links[item.V.(string)] = true
+			eh.links[item.V.(string)] = tmpDir
 		}
 	}
 }
@@ -140,14 +149,6 @@ func (eh *EHParser) visitSubPage(ctx context.Context, i interface{}) (interface{
 	if err != nil {
 		return nil, err
 	}
-	// 找到标题
-	if len(eh.title) == 0 {
-		eh.title = doc.Find("head title").First().Text()
-		eh.tmpDir, err = MKTmpDirIfNotExist(eh.title)
-		if err != nil {
-			return nil, err
-		}
-	}
 	// 找到图片
 	src, _ := doc.Find("div[id=i3] a img").First().Attr("src")
 	if src == OverLimitErrorPage { // 判断是否是509错误页
@@ -158,7 +159,7 @@ func (eh *EHParser) visitSubPage(ctx context.Context, i interface{}) (interface{
 
 /// 下载图片，这里为了避免IP被Ban，采用逐个访问的方式
 func (eh *EHParser) downloadPic(src, dst string) rxgo.Observable {
-	return rxgo.Create([]rxgo.Producer{func(ctx context.Context, next chan<- rxgo.Item) {
+	item := rxgo.Create([]rxgo.Producer{func(ctx context.Context, next chan<- rxgo.Item) {
 		addr, err := url.Parse(src)
 		if err != nil {
 			next <- rxgo.Error(err)
@@ -166,7 +167,7 @@ func (eh *EHParser) downloadPic(src, dst string) rxgo.Observable {
 		}
 		fmt.Printf("正在下载: %v\n", addr.String())
 		resp, err := eh.client.Get(addr.String())
-		defer func() {
+		defer func() { // TODO：如果超出限额，这里会重定向到这样的页面：https://pabdsvx.njxanimfdxzh.hath.network/h/80，可能会导致Crash，
 			_ = resp.Body.Close()
 		}()
 		if err != nil {
@@ -180,6 +181,7 @@ func (eh *EHParser) downloadPic(src, dst string) rxgo.Observable {
 			E: err,
 		}
 	}})
+	return item.Retry(3, eh.retryStrategy)
 }
 
 func (eh *EHParser) retryStrategy(err error) bool {
@@ -195,8 +197,8 @@ func (eh *EHParser) Export(path string) error {
 		return fmt.Errorf("no link found")
 	}
 	obs := make([]rxgo.Observable, 0)
-	for link, _ := range eh.links {
-		obs = append(obs, eh.downloadPic(link, eh.tmpDir).Retry(3, eh.retryStrategy))
+	for link, tmpDir := range eh.links {
+		obs = append(obs, eh.downloadPic(link, tmpDir))
 	}
 	for file := range rxgo.Merge(obs).Observe() {
 		if file.E != nil {
@@ -204,26 +206,8 @@ func (eh *EHParser) Export(path string) error {
 		}
 	}
 	defer func() {
-		if err := os.RemoveAll(eh.tmpDir); err != nil { // 删除临时文件夹
-			fmt.Printf("删除临时文件夹失败 %v\n", err)
-		}
+		CleanAllTmpDirs(eh.links)
 		fmt.Println("导出完成")
 	}()
-	// 分辨是文件还是文件, 如果是文件夹，创建文件夹
-	if filepath.Ext(path) != "zip" {
-		_, err := os.Stat(path)
-		if os.IsNotExist(err) { // 检查输出文件夹是否存在
-			err = os.MkdirAll(path, os.ModePerm)
-		}
-		if err != nil {
-			return err
-		}
-		path = filepath.Join(path, eh.title+".zip")
-	}
-	fmt.Println("正在创建压缩包")
-	err := ZipDir(path, eh.tmpDir) // 创建压缩包
-	if err != nil {
-		return err
-	}
-	return err
+	return ZipFiles(path, eh.links)
 }
