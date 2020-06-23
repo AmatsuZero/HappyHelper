@@ -2,6 +2,7 @@ package test
 
 import (
 	"HappyHelper"
+	"HappyHelper/ehentai"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -10,7 +11,7 @@ import (
 
 func TestDownloadSinglePage(t *testing.T) {
 	t.Log(os.Getenv("https_proxy"))
-	parser := HappyHelper.NewEHParser()
+	parser := ehentai.NewEHParser()
 	snapShot := HappyHelper.NewSnapShot(parser)
 	err := snapShot.Parse("https://e-hentai.org/g/835164/effdba09ab/")
 	if err != nil {
@@ -31,9 +32,9 @@ func TestDownloadSinglePage(t *testing.T) {
 
 func TestParseGrid(t *testing.T) {
 	t.Log(os.Getenv("https_proxy"))
-	parser := HappyHelper.NewEHParser()
+	parser := ehentai.NewEHParser()
 	snapShot := HappyHelper.NewSnapShot(parser)
-	err := snapShot.Parse("https://e-hentai.org/tag/artist:bobbydando")
+	err := snapShot.Parse("https://e-hentai.org/tag/artist:urakan")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -48,9 +48,13 @@ func ZipDir(dst, dir string) (err error) {
 	if err != nil {
 		return
 	}
-	defer fz.Close()
+	defer func() {
+		_ = fz.Close()
+	}()
 	w := zip.NewWriter(fz)
-	defer w.Close()
+	defer func() {
+		_ = w.Close()
+	}()
 	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if info.IsDir() || err != nil {
 			return err
@@ -63,7 +67,9 @@ func ZipDir(dst, dir string) (err error) {
 		if err != nil {
 			return err
 		}
-		defer fSrc.Close()
+		defer func() {
+			_ = fSrc.Close()
+		}()
 		_, err = io.Copy(fDest, fSrc)
 		if err != nil {
 			return err
@@ -110,17 +116,51 @@ func ZipFiles(path string, links map[string]string) error {
 	return nil
 }
 
-type OrderStringSet map[string]int
+type Paths []string
 
-func NewOrderStringSet(arr []string) OrderStringSet {
-	dict := make(map[string]int)
-	for i, elem := range arr {
-		dict[elem] = i
-	}
-	return dict
+func NewPaths(u *url.URL) Paths {
+	return strings.Split(u.Path, "/")
 }
 
-func (set OrderStringSet) Contains(value string) bool {
-	_, ok := set[value]
-	return ok
+func (paths *Paths) Append(path string) {
+	*paths = append(*paths, path)
+	return
+}
+
+func (paths Paths) LastComponent() string {
+	if len(paths) == 0 {
+		return ""
+	}
+	return paths[len(paths)-1]
+}
+
+func (paths *Paths) RemoveLast() (p string) {
+	if len(*paths) == 0 {
+		return ""
+	}
+	p, *paths = (*paths)[len(*paths)-1], (*paths)[:len(*paths)-1]
+	return
+}
+
+func (paths *Paths) Del(path string) {
+	index := -1
+	for i, e := range *paths {
+		if e == path {
+			index = i
+			break
+		}
+	}
+	if index == -1 {
+		return
+	}
+	*paths = append((*paths)[:index], (*paths)[index:]...)
+	return
+}
+
+func (paths Paths) Encode() string {
+	result := make([]string, len(paths))
+	for i, path := range paths {
+		result[i] = url.QueryEscape(path)
+	}
+	return strings.Join(paths, "/")
 }
