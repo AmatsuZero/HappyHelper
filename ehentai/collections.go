@@ -83,7 +83,7 @@ func NewPagePathType(src *url.URL) PagePathType {
 		return PagePathTag
 	case src.Query().Get("f_search") != "":
 		return PagePathSearch
-	case strings.Contains(src.Path, "/p/"):
+	case strings.Contains(src.Path, "/g/"):
 		return PagePathGallery
 	case src.Path == "/":
 		return PagePathIndex

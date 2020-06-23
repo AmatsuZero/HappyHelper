@@ -8,19 +8,20 @@ import (
 	"github.com/reactivex/rxgo/v2"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 )
 
 type EHParser struct {
 	client     *http.Client
-	links      map[string]string
+	links      map[string][]string
 	RetryCount int // 重试次数
 }
 
 func NewEHParser() *EHParser {
 	return &EHParser{
 		client:     &http.Client{},
-		links:      make(map[string]string),
+		links:      make(map[string][]string),
 		RetryCount: 3,
 	}
 }
@@ -155,9 +156,13 @@ func (eh *EHParser) parseSingleDetailPage(doc *goquery.Document) {
 	for item := range links.Observe() {
 		if item.E != nil {
 			fmt.Printf("获取图片地址失败 : %v\n", item.E)
-			continue
 		} else {
-			eh.links[item.V.(string)] = tmpDir
+			arr, ok := eh.links[tmpDir]
+			if !ok {
+				arr = make([]string, 0)
+			}
+			arr = append(arr, item.V.(string))
+			eh.links[tmpDir] = arr
 		}
 	}
 }
@@ -198,7 +203,7 @@ func (eh *EHParser) downloadPic(src, dst string) rxgo.Observable {
 			next <- rxgo.Error(err)
 			return
 		}
-		req.Header.Set("Connection", "close") // 尝试解决 too many connections
+		//req.Header.Set("Connection", "close") // 尝试解决 too many connections
 		resp, err := eh.client.Do(req)
 		if err != nil {
 			next <- rxgo.Error(err)
@@ -233,13 +238,27 @@ func (eh *EHParser) retryStrategy(err error) bool {
 }
 
 func (eh *EHParser) Export(path string) error {
-	fmt.Printf("开始导出，共%d项\n", len(eh.links))
+	fmt.Printf("开始导出，共%d本\n", len(eh.links))
 	if len(eh.links) == 0 {
 		return fmt.Errorf("no link found")
 	}
-	obs := make([]rxgo.Observable, 0)
-	for link, tmpDir := range eh.links {
-		obs = append(obs, eh.downloadPic(link, tmpDir))
+	obs := make([]rxgo.Observable, 0, len(eh.links))
+	for tmpDir, links := range eh.links {
+		tmp := map[string][]string{tmpDir: links}
+		obs = append(obs, rxgo.Just(tmp)().FlatMap(func(item rxgo.Item) rxgo.Observable {
+			var links []string
+			var dir string
+			for k, v := range item.V.(map[string][]string) {
+				links = v
+				dir = k
+			}
+			fmt.Printf("书名: %v, 共 %d 页\n", filepath.Base(tmpDir), len(links))
+			tmp := make([]rxgo.Observable, 0, len(links))
+			for _, link := range links {
+				tmp = append(tmp, eh.downloadPic(link, dir))
+			}
+			return rxgo.Merge(tmp)
+		}))
 	}
 	for file := range rxgo.Merge(obs).Observe() {
 		if file.E != nil {
