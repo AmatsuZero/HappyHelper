@@ -64,6 +64,8 @@ func (mode DisplayMode) findPages(doc *goquery.Document) rxgo.Observable {
 	item = item.Filter(func(i interface{}) bool {
 		s, ok := i.(string)
 		return ok && len(s) > 0
+	}).Distinct(func(ctx context.Context, i interface{}) (interface{}, error) { // 去重
+		return i, nil
 	})
 	return item
 }
@@ -192,6 +194,8 @@ func (t PagePathType) CreatePageLinks(doc *goquery.Document) rxgo.Observable {
 			u.RawQuery = queries.Encode()
 		}
 		return u.String(), nil
+	}).Distinct(func(ctx context.Context, i interface{}) (interface{}, error) { // 去重
+		return i, err
 	})
 	if start == maxPage.V.(int) {
 		return item.Take(1)
