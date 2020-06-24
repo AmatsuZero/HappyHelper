@@ -56,11 +56,11 @@ func (mode DisplayMode) patternString() string {
 	return ""
 }
 
-func (mode DisplayMode) findPages(doc *goquery.Document, eh *EHParser) rxgo.Observable {
+func (mode DisplayMode) findPages(doc *goquery.Document) rxgo.Observable {
 	item := rxgo.Just(doc.Find(mode.patternString()).Map(func(i int, selection *goquery.Selection) string {
 		src, _ := selection.Attr("href")
 		return src
-	}))().Retry(eh.RetryCount, eh.retryStrategy)
+	}))()
 	item = item.Filter(func(i interface{}) bool {
 		s, ok := i.(string)
 		return ok && len(s) > 0
@@ -107,6 +107,7 @@ func (t PagePathType) PagePattern() string {
 	}
 }
 
+/// 分页字符串
 func (t PagePathType) PageQuery() string {
 	switch t {
 	case PagePathGallery:
@@ -118,30 +119,43 @@ func (t PagePathType) PageQuery() string {
 	}
 }
 
-func (t PagePathType) CreatePageLinks(doc *goquery.Document) rxgo.Observable {
-	maxPage, err := rxgo.Just(doc.Find(t.PagePattern()).Map(func(i int, selection *goquery.Selection) string {
+/// 根据页面类型，找到当前页码
+func (t PagePathType) CurrentPage(src string) (int, error) {
+	u, e := url.Parse(src)
+	if e != nil {
+		return 0, e
+	}
+	switch t {
+	case PagePathTag:
+		paths := HappyHelper.NewPaths(u)
+		return strconv.Atoi(paths.LastComponent())
+	default:
+		return strconv.Atoi(u.Query().Get(t.PageQuery()))
+	}
+}
+
+/// 根据当前页面类型，找到最大页码
+func (t PagePathType) FindMaxPage(doc *goquery.Document) (rxgo.Item, error) {
+	return rxgo.Just(doc.Find(t.PagePattern()).Map(func(i int, selection *goquery.Selection) string {
 		src, _ := selection.Attr("href")
 		return src
 	}))().Filter(func(i interface{}) bool {
 		s, ok := i.(string)
-		if !ok || len(s) == 0 {
-			return false
-		}
-		if _, err := strconv.Atoi(s); err != nil { // 过滤掉无法转换成数字的
-			return false
-		}
-		return true
+		return ok && len(s) > 0
 	}).Map(func(ctx context.Context, i interface{}) (interface{}, error) {
-		addr, err := url.Parse(i.(string))
-		if err != nil {
-			return 0, err
+		p, e := t.CurrentPage(i.(string))
+		if e != nil {
+			return 0, nil
 		}
-		p := addr.Query().Get(t.PageQuery())
-		return strconv.Atoi(p)
+		return p, nil
 	}).Max(func(i interface{}, i2 interface{}) int {
 		return i.(int) - i2.(int)
 	}).Get()
+}
 
+/// 根据当前页面最大页码，创建链接
+func (t PagePathType) CreatePageLinks(doc *goquery.Document) rxgo.Observable {
+	maxPage, err := t.FindMaxPage(doc)
 	start := 0
 	if err != nil {
 		return rxgo.Just(err)()

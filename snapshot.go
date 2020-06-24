@@ -1,12 +1,8 @@
 package HappyHelper
 
-import (
-	"fmt"
-)
-
 type HappyParser interface {
-	Parse(src string) error
-	Export(path string) error
+	Parse(src string) <-chan struct{}
+	Export(path string) <-chan struct{}
 }
 
 type PageSnapShot struct {
@@ -19,13 +15,13 @@ func NewSnapShot(parser HappyParser) *PageSnapShot {
 	}
 }
 
-func (p *PageSnapShot) Parse(src string) error {
+func (p *PageSnapShot) Parse(src string) <-chan struct{} {
 	return p.Parser.Parse(src)
 }
 
-func (p *PageSnapShot) Download(dst string) error {
+func (p *PageSnapShot) Download(dst string) <-chan struct{} {
 	if p.Parser == nil || len(dst) == 0 {
-		return fmt.Errorf("no parser for path: %v", dst)
+		return nil
 	}
 	return p.Parser.Export(dst)
 }

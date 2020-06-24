@@ -79,8 +79,8 @@ func ZipDir(dst, dir string) (err error) {
 	return
 }
 
-func CleanAllTmpDirs(links map[string][]string) {
-	for tmpDir := range links {
+func CleanAllTmpDirs(links []string) {
+	for _, tmpDir := range links {
 		_, err := os.Stat(tmpDir)
 		if os.IsNotExist(err) { // 已经不存在了，略过
 			continue
@@ -91,7 +91,7 @@ func CleanAllTmpDirs(links map[string][]string) {
 	}
 }
 
-func ZipFiles(path string, links map[string][]string) error {
+func ZipFiles(path string, links []string) error {
 	_, err := os.Stat(path)
 	if os.IsNotExist(err) { // 检查输出文件夹是否存在
 		err = os.MkdirAll(path, os.ModePerm)
@@ -101,7 +101,7 @@ func ZipFiles(path string, links map[string][]string) error {
 	}
 	// 标记已经压缩过的
 	flags := make(map[string]bool)
-	for tmpDir, _ := range links {
+	for _, tmpDir := range links {
 		output := filepath.Join(path, filepath.Base(tmpDir)) + ".zip"
 		if _, ok := flags[output]; ok {
 			continue
@@ -163,4 +163,9 @@ func (paths Paths) Encode() string {
 		result[i] = url.QueryEscape(path)
 	}
 	return strings.Join(paths, "/")
+}
+
+type DownloadType interface {
+	TmpDir() (string, error)
+	Download(dst string) <-chan struct{}
 }
