@@ -7,16 +7,10 @@ import (
 )
 
 func TestCreateTable(t *testing.T) {
-	db, err := ehentai.DefaultSerializeManager.GetDB()
-	assert.NoError(t, err)
 	gallery := ehentai.Gallery{}
-	stat, err := db.Prepare(gallery.CreteTableQuery())
+	err := ehentai.DefaultSerializeManager.CreateTable(gallery.CreteTableQuery())
 	assert.NoError(t, err)
-	_, err = stat.Exec()
-	assert.NoError(t, err)
-	_, err = db.Query(gallery.CreteTableQuery())
-	assert.NoError(t, err)
-	err = db.Close()
+	err = ehentai.DefaultSerializeManager.Close()
 	assert.NoError(t, err)
 }
 
@@ -63,5 +57,5 @@ func TestDeleteData(t *testing.T) {
 
 	result, err := ehentai.RestoreGallery(src)
 	assert.NoError(t, err)
-	assert.Equal(t, &ehentai.Gallery{}, result)
+	assert.Nil(t, result)
 }

@@ -41,11 +41,17 @@ func (g *Gallery) createObservable() rxgo.Observable {
 			err = fmt.Errorf("%v", HappyHelper.OverLimitError)
 		}
 		return src, err
+	}).Distinct(func(ctx context.Context, i interface{}) (interface{}, error) {
+		return i, nil
 	})
 }
 
 func (g *Gallery) Parse() rxgo.Disposed {
+	if len(g.Links) > 0 {
+		return rxgo.Empty().Run()
+	}
 	item := g.createObservable()
+
 	return item.ForEach(func(i interface{}) {
 		if g.Links == nil {
 			g.Links = make([]string, 0)
@@ -56,6 +62,11 @@ func (g *Gallery) Parse() rxgo.Disposed {
 	}, func() {
 		fmt.Printf("书名: %v, 共 %d 页\n", g.BookName, len(g.Links))
 		fmt.Println("========================================")
+		// 持久化
+		_, err := g.Serialize()
+		if err != nil {
+			fmt.Printf("持久化失败: %v\n", err)
+		}
 	}, rxgo.WithBufferedChannel(10))
 }
 
@@ -187,6 +198,11 @@ func (g *Gallery) Serialize() (id int64, err error) {
 	if err != nil {
 		return -1, err
 	}
+	// 建表
+	err = DefaultSerializeManager.CreateTable(g.CreteTableQuery())
+	if err != nil {
+		return -1, err
+	}
 	if g.SerializedDate == 0 { // 说明没有创建过
 		g.SerializedDate = time.Now().Unix()
 		id, err = DefaultSerializeManager.Insert("gallery", map[string]interface{}{
@@ -203,9 +219,17 @@ func (g *Gallery) Serialize() (id int64, err error) {
 
 /// 按照网址，恢复数据
 func RestoreGallery(src string) (g *Gallery, err error) {
+	// 建表
+	err = DefaultSerializeManager.CreateTable(Gallery{}.CreteTableQuery())
+	if err != nil {
+		return nil, err
+	}
 	rows, err := DefaultSerializeManager.GetRows("gallery", map[string]interface{}{
 		"src": src,
 	})
+	if err != nil {
+		return nil, err
+	}
 	defer func() {
 		_ = rows.Close()
 	}()
@@ -232,8 +256,11 @@ func RestoreGallery(src string) (g *Gallery, err error) {
 		}
 		break
 	}
-	if g == nil {
-		g = &Gallery{}
+	if g != nil { // 检查是否过期
+		t := time.Now().Unix()
+		if time.Duration(t-g.SerializedDate) > 24*time.Hour {
+			return nil, nil
+		}
 	}
 	return
 }

@@ -28,10 +28,14 @@ func (eh *EHParser) Parse(src string) <-chan struct{} {
 	fmt.Println("++++++++++++++++++++++++++++++++++++++++")
 	pathType := NewPagePathType(u)
 	if pathType == PagePathGallery { // 画廊模式
-		g := &Gallery{
-			Client: eh.client,
-			Src:    src,
+		g, err := RestoreGallery(src)
+		if err != nil {
+			return nil
 		}
+		if g == nil {
+			g = &Gallery{Src: src}
+		}
+		g.Client = eh.client
 		eh.DownloadItem = g
 		return g.Parse()
 	}

@@ -119,6 +119,19 @@ func (mgr *SerializeManager) openDB() error {
 	return nil
 }
 
+func (mgr *SerializeManager) CreateTable(query string) error {
+	db, err := mgr.GetDB()
+	if err != nil {
+		return err
+	}
+	stat, err := db.Prepare(query)
+	if err != nil {
+		return err
+	}
+	_, err = stat.Exec()
+	return err
+}
+
 func (mgr *SerializeManager) Insert(tableName string, args map[string]interface{}) (int64, error) {
 	db, err := mgr.GetDB()
 	if err != nil {
@@ -134,7 +147,7 @@ func (mgr *SerializeManager) Insert(tableName string, args map[string]interface{
 		questionMarks = append(questionMarks, "?")
 	}
 	query += strings.Join(keys, ",")
-	query += fmt.Sprintf(") values(%v)", questionMarks)
+	query += fmt.Sprintf(") values(%v)", strings.Join(questionMarks, ","))
 	stmt, err := db.Prepare(query)
 	if err != nil {
 		return -1, err
@@ -216,4 +229,11 @@ func (mgr *SerializeManager) Delete(table string, condition map[string]interface
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+func (mgr *SerializeManager) Close() error {
+	if mgr == nil || mgr.db == nil {
+		return nil
+	}
+	return mgr.db.Close()
 }
