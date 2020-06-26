@@ -13,14 +13,20 @@ import (
 const OverLimitError = "Over Limit"
 const OverLimitErrorPage = "https://ehgt.org/g/509.gif"
 
+///
+func MKDirIfNotExist(path string) error {
+	_, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		err = os.MkdirAll(path, os.ModePerm)
+	}
+	return err
+}
+
 /// 创建临时文件夹
 func MKTmpDirIfNotExist(title string) (string, error) {
 	// 创建临时文件夹
 	dir := filepath.Join(os.TempDir(), title)
-	_, err := os.Stat(dir)
-	if os.IsNotExist(err) {
-		err = os.MkdirAll(dir, os.ModePerm)
-	}
+	err := MKDirIfNotExist(dir)
 	return dir, err
 }
 

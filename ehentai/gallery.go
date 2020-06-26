@@ -3,18 +3,21 @@ package ehentai
 import (
 	"HappyHelper"
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/reactivex/rxgo/v2"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 type Gallery struct {
-	Client   *http.Client
-	Src      string   // 地址
-	Links    []string // 图片地址
-	BookName string   // 标题
+	Client         *http.Client
+	Src            string   // 地址
+	Links          []string // 图片地址
+	BookName       string   // 标题
+	SerializedDate int64    // 写入到数据库的时间戳
 }
 
 /// 从大图浏览页面找到图片地址
@@ -53,7 +56,7 @@ func (g *Gallery) Parse() rxgo.Disposed {
 	}, func() {
 		fmt.Printf("书名: %v, 共 %d 页\n", g.BookName, len(g.Links))
 		fmt.Println("========================================")
-	})
+	}, rxgo.WithBufferedChannel(10))
 }
 
 /// 找到当前页面一共有多少页， 获取每个页面的链接
@@ -127,7 +130,7 @@ func (g Gallery) Download(dst string) <-chan struct{} {
 		if e != nil {
 			fmt.Printf("创建压缩包失败: %v\n", e)
 		}
-	})
+	}, rxgo.WithBufferedChannel(10))
 }
 
 /// 下载图片到指定指定文件夹
@@ -164,4 +167,92 @@ func (g *Gallery) download(src, dst string) rxgo.Observable {
 
 func (g *Gallery) TmpDir() (string, error) {
 	return HappyHelper.MKTmpDirIfNotExist(g.BookName)
+}
+
+/// 简表语句
+func (g Gallery) CreteTableQuery() string {
+	return `
+	CREATE TABLE IF NOT EXISTS gallery (
+    'id' INTEGER PRIMARY KEY AUTOINCREMENT,
+	'src' TEXT NOT NULL UNIQUE,
+    'name' TEXT NULL,
+    'links' TEXT NULL,
+	'date' DATE NULL
+	)`
+}
+
+/// 保存到数据库
+func (g *Gallery) Serialize() (id int64, err error) {
+	urlsJSON, err := json.Marshal(g.Links)
+	if err != nil {
+		return -1, err
+	}
+	if g.SerializedDate == 0 { // 说明没有创建过
+		g.SerializedDate = time.Now().Unix()
+		id, err = DefaultSerializeManager.Insert("gallery", map[string]interface{}{
+			"name":  g.BookName,
+			"links": string(urlsJSON),
+			"date":  g.SerializedDate,
+			"src":   g.Src,
+		})
+	} else { // 改为更新
+		id, err = g.update()
+	}
+	return
+}
+
+/// 按照网址，恢复数据
+func RestoreGallery(src string) (g *Gallery, err error) {
+	rows, err := DefaultSerializeManager.GetRows("gallery", map[string]interface{}{
+		"src": src,
+	})
+	defer func() {
+		_ = rows.Close()
+	}()
+	for rows.Next() {
+		var links string
+		var name string
+		var id int
+		var date time.Time
+		var src string
+		err = rows.Scan(&id, &src, &name, &links, &date)
+		if err != nil {
+			return nil, err
+		}
+		var tmp []string
+		err = json.Unmarshal([]byte(links), &tmp)
+		if err != nil {
+			return nil, err
+		}
+		g = &Gallery{
+			Links:          tmp,
+			SerializedDate: date.Unix(),
+			Src:            src,
+			BookName:       name,
+		}
+		break
+	}
+	if g == nil {
+		g = &Gallery{}
+	}
+	return
+}
+
+/// 更新数据
+func (g *Gallery) update() (int64, error) {
+	urlsJSON, err := json.Marshal(g.Links)
+	if err != nil {
+		return 0, err
+	}
+	g.SerializedDate = time.Now().Unix()
+	affect, err := DefaultSerializeManager.Update("gallery", map[string]interface{}{
+		"name":  g.BookName,
+		"links": string(urlsJSON),
+		"date":  g.SerializedDate,
+		"src":   g.Src,
+	}, map[string]interface{}{"src": g.Src})
+	if err != nil {
+		return 0, err
+	}
+	return affect, err
 }
