@@ -3,6 +3,8 @@ package ehentai
 import (
 	"HappyHelper"
 	"context"
+	"encoding/json"
+	"fmt"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/reactivex/rxgo/v2"
 	"net/url"
@@ -201,4 +203,200 @@ func (t PagePathType) CreatePageLinks(doc *goquery.Document) rxgo.Observable {
 		return item.Take(1)
 	}
 	return item
+}
+
+type TagType int
+
+const (
+	HTagUnknown TagType = iota
+	HTagGroup
+	HTagArtist
+	HTagMale
+	HTagFemale
+	HTagMisc
+)
+
+func NewHTag(tag string) TagType {
+	switch tag {
+	case "group":
+		return HTagGroup
+	case "artist":
+		return HTagArtist
+	case "male":
+		return HTagMale
+	case "female":
+		return HTagFemale
+	case "misc":
+		return HTagMisc
+	default:
+		return HTagUnknown
+	}
+}
+
+func (t TagType) TableName() string {
+	switch t {
+	case HTagGroup:
+		return "ehentai_group"
+	case HTagArtist:
+		return "ehentai_artist"
+	case HTagFemale:
+		return "ehentai_female"
+	case HTagMale:
+		return "ehentai_male"
+	case HTagMisc:
+		return "ehentai_misc"
+	default:
+		return ""
+	}
+}
+
+func (t TagType) CreateTableQuery() string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %v (
+		'id' INTEGER PRIMARY KEY AUTOINCREMENT,
+		'value' TEXT NOT NULL UNIQUE,
+		'links' TEXT NULL
+	)`, t.TableName())
+}
+
+type Tags struct {
+	Type  TagType
+	Name  string
+	Links []string
+}
+
+func (t *Tags) insert() (int64, error) {
+	urlsJSON, err := json.Marshal(t.Links)
+	if err != nil {
+		return 0, err
+	}
+	return DefaultSerializeManager.Insert(t.Type.TableName(), map[string]interface{}{
+		"value": t.Name,
+		"links": string(urlsJSON),
+	})
+}
+
+func (t *Tags) update() (int64, error) {
+	urlsJSON, err := json.Marshal(t.Links)
+	if err != nil {
+		return 0, err
+	}
+	return DefaultSerializeManager.Update(t.Type.TableName(), map[string]interface{}{
+		"value": t.Name,
+		"links": string(urlsJSON),
+	}, map[string]interface{}{
+		"value": t.Name,
+	})
+}
+
+func (t TagType) RemoveLinksFromAllTag(src string) (int64, error) {
+	db, err := DefaultSerializeManager.GetDB()
+	if err != nil {
+		return 0, err
+	}
+	rows, err := db.Query(fmt.Sprintf("SELECT id from %v WHERE instr(links, ?) > 0", t.TableName()), src)
+	if err != nil {
+		return 0, err
+	}
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id int
+		err = rows.Scan(&id)
+		if err != nil {
+			return 0, err
+		}
+		ids = append(ids, strconv.Itoa(id))
+	}
+	err = rows.Close()
+	if err != nil {
+		return 0, err
+	}
+	query := fmt.Sprintf("DELETE from %v where id in(%v)", t.TableName(), strings.Join(ids, ","))
+	stmt, err := db.Prepare(query)
+	if err != nil {
+		return 0, err
+	}
+	ret, err := stmt.Exec()
+	if err != nil {
+		return 0, err
+	}
+	return ret.RowsAffected()
+}
+
+func (t TagType) RemoveLinks(tagName string, src []string) (int64, error) {
+	tag, err := t.restore(tagName)
+	if err != nil || tag == nil {
+		return 0, err
+	}
+	dict := make(map[string]int)
+	for i, link := range src {
+		dict[link] = i
+	}
+	newLinks := make([]string, 0)
+	for _, link := range tag.Links {
+		if _, ok := dict[link]; !ok {
+			newLinks = append(newLinks, link)
+		}
+	}
+	tag.Links = newLinks
+	return tag.update()
+}
+
+func (t TagType) restore(tagName string) (tag *Tags, err error) {
+	err = DefaultSerializeManager.CreateTable(t.CreateTableQuery())
+	if err != nil {
+		return nil, err
+	}
+	rows, err := DefaultSerializeManager.GetRows(t.TableName(), map[string]interface{}{
+		"value": tagName,
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	for rows.Next() {
+		var id int
+		var value string
+		var links string
+		err = rows.Scan(&id, &value, &links)
+		if err != nil {
+			return nil, err
+		}
+		tmp := &Tags{
+			Type: t,
+			Name: tagName,
+		}
+		err = json.Unmarshal([]byte(links), &tmp.Links)
+		if err != nil {
+			return nil, err
+		}
+		tag = tmp
+	}
+	return tag, err
+}
+
+func (t TagType) UpdateLinks(tagName string, src []string) (int64, error) {
+	tag, err := t.restore(tagName)
+	if err != nil {
+		return 0, err
+	}
+	if tag == nil {
+		tag = &Tags{
+			Type:  t,
+			Name:  tagName,
+			Links: src,
+		}
+		return tag.insert()
+	}
+	dict := make(map[string]int)
+	for i, link := range tag.Links {
+		dict[link] = i
+	}
+	for _, link := range src {
+		if _, ok := dict[link]; !ok {
+			tag.Links = append(tag.Links, link)
+		}
+	}
+	return tag.update()
 }

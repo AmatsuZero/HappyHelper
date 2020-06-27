@@ -17,7 +17,13 @@ type Gallery struct {
 	Src            string   // 地址
 	Links          []string // 图片地址
 	BookName       string   // 标题
+	AlterName      string   // 别名
 	SerializedDate int64    // 写入到数据库的时间戳
+	ArtistTags     []string // 作者标签
+	GroupTags      []string // 团体标签
+	FemaleTags     []string // 女性标签
+	MaleTags       []string // 男性标签
+	MiscTags       []string // 杂项
 }
 
 /// 从大图浏览页面找到图片地址
@@ -60,13 +66,16 @@ func (g *Gallery) Parse() rxgo.Disposed {
 	}, func(err error) {
 		fmt.Println("遇到错误: " + err.Error())
 	}, func() {
-		fmt.Printf("书名: %v, 共 %d 页\n", g.BookName, len(g.Links))
+		fmt.Println(g)
 		fmt.Println("========================================")
 		// 持久化
 		_, err := g.Serialize()
 		if err != nil {
 			fmt.Printf("持久化失败: %v\n", err)
 		}
+		// 写入标签
+		cancel := g.writeTags().Run()
+		<-cancel
 	}, rxgo.WithBufferedChannel(10))
 }
 
@@ -81,8 +90,7 @@ func (g *Gallery) createPageLinks(src string) rxgo.Observable {
 			return rxgo.Just(fmt.Errorf("no doc"))()
 		}
 		doc := item.V.(*goquery.Document)
-		// 找到标题
-		g.BookName = doc.Find("head title").First().Text()
+		g.extractDetailInfo(doc)
 		return PagePathGallery.CreatePageLinks(doc).FlatMap(func(item rxgo.Item) rxgo.Observable {
 			if item.E != nil {
 				return rxgo.Just(item.E)()
@@ -97,6 +105,56 @@ func (g *Gallery) createPageLinks(src string) rxgo.Observable {
 		})
 	}, rxgo.WithBufferedChannel(10))
 	return item
+}
+
+func (g *Gallery) writeTags() rxgo.Observable {
+	obs := make([]rxgo.Observable, 0, 5)
+	obs = append(obs, rxgo.Just(g.GroupTags)().Map(func(ctx context.Context, i interface{}) (interface{}, error) {
+		return HTagGroup.UpdateLinks(i.(string), []string{g.Src})
+	}))
+	obs = append(obs, rxgo.Just(g.ArtistTags)().Map(func(ctx context.Context, i interface{}) (interface{}, error) {
+		return HTagArtist.UpdateLinks(i.(string), []string{g.Src})
+	}))
+	obs = append(obs, rxgo.Just(g.MaleTags)().Map(func(ctx context.Context, i interface{}) (interface{}, error) {
+		return HTagMale.UpdateLinks(i.(string), []string{g.Src})
+	}))
+	obs = append(obs, rxgo.Just(g.FemaleTags)().Map(func(ctx context.Context, i interface{}) (interface{}, error) {
+		return HTagFemale.UpdateLinks(i.(string), []string{g.Src})
+	}))
+	obs = append(obs, rxgo.Just(g.FemaleTags)().Map(func(ctx context.Context, i interface{}) (interface{}, error) {
+		return HTagMisc.UpdateLinks(i.(string), []string{g.Src})
+	}))
+	return rxgo.Concat(obs)
+}
+
+/// 提取页面详情
+func (g *Gallery) extractDetailInfo(doc *goquery.Document) {
+	// 找到标题
+	g.BookName = doc.Find("div[class=gm] div[id=gd2] h1[id=gn]").First().Text()
+	// 找到副标题
+	g.AlterName = doc.Find("div[class=gm] div[id=gd2] h1[id=gj]").First().Text()
+
+	tagList := doc.Find("div[class=gm] div[id=taglist] tbody")
+	// 找到 Group 标签
+	g.GroupTags = tagList.Find("td[class=tc]:contains('group:')+td div a").Map(func(i int, selection *goquery.Selection) string {
+		return selection.Text()
+	})
+	// 作者 Artist Tags 标签
+	g.ArtistTags = tagList.Find("td[class=tc]:contains('artist:')+td div a").Map(func(i int, selection *goquery.Selection) string {
+		return selection.Text()
+	})
+	// 男性 Male 标签
+	g.MaleTags = tagList.Find("td[class=tc]:contains('male:')+td div a").Map(func(i int, selection *goquery.Selection) string {
+		return selection.Text()
+	})
+	// 女性 Female 标签
+	g.FemaleTags = tagList.Find("td[class=tc]:contains('female:')+td div a").Map(func(i int, selection *goquery.Selection) string {
+		return selection.Text()
+	})
+	// 其他 Misc 标签
+	g.MiscTags = tagList.Find("td[class=tc]:contains('misc:')+td div a").Map(func(i int, selection *goquery.Selection) string {
+		return selection.Text()
+	})
 }
 
 /// 找到页面里面的所有大图浏览页面链接
@@ -188,13 +246,39 @@ func (g Gallery) CreteTableQuery() string {
 	'src' TEXT NOT NULL UNIQUE,
     'name' TEXT NULL,
     'links' TEXT NULL,
-	'date' DATE NULL
+	'date' DATE NULL,
+	'alt_name' TEXT NULL,
+	'group' TEXT NULL,
+	'artist' TEXT NULL,
+	'male' TEXT NULL,
+	'female' TEXT NULL,
+	'misc' TEXT NULL
 	)`
 }
 
 /// 保存到数据库
 func (g *Gallery) Serialize() (id int64, err error) {
-	urlsJSON, err := json.Marshal(g.Links)
+	links, err := json.Marshal(g.Links)
+	if err != nil {
+		return -1, err
+	}
+	group, err := json.Marshal(g.GroupTags)
+	if err != nil {
+		return -1, err
+	}
+	male, err := json.Marshal(g.MaleTags)
+	if err != nil {
+		return -1, err
+	}
+	female, err := json.Marshal(g.FemaleTags)
+	if err != nil {
+		return -1, err
+	}
+	misc, err := json.Marshal(g.MiscTags)
+	if err != nil {
+		return -1, err
+	}
+	artist, err := json.Marshal(g.ArtistTags)
 	if err != nil {
 		return -1, err
 	}
@@ -203,16 +287,25 @@ func (g *Gallery) Serialize() (id int64, err error) {
 	if err != nil {
 		return -1, err
 	}
+	dict := map[string]interface{}{
+		"name":       g.BookName,
+		"links":      string(links),
+		"src":        g.Src,
+		"alt_name":   g.AlterName,
+		"group_tags": string(group),
+		"female":     string(female),
+		"misc":       string(misc),
+		"male":       string(male),
+		"artist":     string(artist),
+	}
 	if g.SerializedDate == 0 { // 说明没有创建过
 		g.SerializedDate = time.Now().Unix()
-		id, err = DefaultSerializeManager.Insert("gallery", map[string]interface{}{
-			"name":  g.BookName,
-			"links": string(urlsJSON),
-			"date":  g.SerializedDate,
-			"src":   g.Src,
-		})
+		dict["date"] = g.SerializedDate
+		id, err = DefaultSerializeManager.Insert("gallery", dict)
 	} else { // 改为更新
-		id, err = g.update()
+		g.SerializedDate = time.Now().Unix()
+		dict["date"] = g.SerializedDate
+		id, err = g.update(dict)
 	}
 	return
 }
@@ -235,25 +328,48 @@ func RestoreGallery(src string) (g *Gallery, err error) {
 	}()
 	for rows.Next() {
 		var links string
-		var name string
+		var name, altName string
 		var id int
 		var date time.Time
 		var src string
-		err = rows.Scan(&id, &src, &name, &links, &date)
+		var group_tags, artist, female, male, misc string
+
+		err = rows.Scan(&id, &src, &name, &links, &date,
+			&altName, &group_tags, &artist, &male, &female, &misc)
 		if err != nil {
 			return nil, err
 		}
-		var tmp []string
-		err = json.Unmarshal([]byte(links), &tmp)
-		if err != nil {
-			return nil, err
-		}
-		g = &Gallery{
-			Links:          tmp,
-			SerializedDate: date.Unix(),
+		tmp := &Gallery{
 			Src:            src,
+			SerializedDate: date.Unix(),
 			BookName:       name,
+			AlterName:      altName,
 		}
+		err = json.Unmarshal([]byte(links), &tmp.Links)
+		if err != nil {
+			return nil, err
+		}
+		err = json.Unmarshal([]byte(group_tags), &tmp.GroupTags)
+		if err != nil {
+			return nil, err
+		}
+		err = json.Unmarshal([]byte(artist), &tmp.ArtistTags)
+		if err != nil {
+			return nil, err
+		}
+		err = json.Unmarshal([]byte(male), &tmp.MaleTags)
+		if err != nil {
+			return nil, err
+		}
+		err = json.Unmarshal([]byte(female), &tmp.FemaleTags)
+		if err != nil {
+			return nil, err
+		}
+		err = json.Unmarshal([]byte(misc), &tmp.MiscTags)
+		if err != nil {
+			return nil, err
+		}
+		g = tmp
 		break
 	}
 	if g != nil { // 检查是否过期
@@ -266,20 +382,47 @@ func RestoreGallery(src string) (g *Gallery, err error) {
 }
 
 /// 更新数据
-func (g *Gallery) update() (int64, error) {
-	urlsJSON, err := json.Marshal(g.Links)
-	if err != nil {
-		return 0, err
-	}
-	g.SerializedDate = time.Now().Unix()
-	affect, err := DefaultSerializeManager.Update("gallery", map[string]interface{}{
-		"name":  g.BookName,
-		"links": string(urlsJSON),
-		"date":  g.SerializedDate,
-		"src":   g.Src,
-	}, map[string]interface{}{"src": g.Src})
+func (g *Gallery) update(dict map[string]interface{}) (int64, error) {
+	affect, err := DefaultSerializeManager.Update("gallery", dict, map[string]interface{}{"src": g.Src})
 	if err != nil {
 		return 0, err
 	}
 	return affect, err
+}
+
+func (g *Gallery) Delete() error {
+	_, err := DefaultSerializeManager.Delete("gallery", map[string]interface{}{
+		"src": g.Src,
+	})
+	if err != nil {
+		return err
+	}
+	// 从标签记录删除
+	if _, err := HTagGroup.RemoveLinksFromAllTag(g.Src); err != nil {
+		fmt.Println("团队标签删除失败")
+	}
+	if _, err := HTagArtist.RemoveLinksFromAllTag(g.Src); err != nil {
+		fmt.Println("作家标签删除失败")
+	}
+	if _, err := HTagMale.RemoveLinksFromAllTag(g.Src); err != nil {
+		fmt.Println("男性标签删除失败")
+	}
+	if _, err := HTagFemale.RemoveLinksFromAllTag(g.Src); err != nil {
+		fmt.Println("女性标签删除失败")
+	}
+	if _, err := HTagMisc.RemoveLinksFromAllTag(g.Src); err != nil {
+		fmt.Println("其他标签删除失败")
+	}
+	return nil
+}
+
+func (g *Gallery) String() string {
+	str := fmt.Sprintf("书名：%v\n", g.BookName)
+	str += fmt.Sprintf("别名: %v\n", g.AlterName)
+	str += fmt.Sprintf("作者：%v\n", g.ArtistTags)
+	str += fmt.Sprintf("团体: %v\n", g.GroupTags)
+	str += fmt.Sprintf("女性: %v\n", g.FemaleTags)
+	str += fmt.Sprintf("男性: %v\n", g.MaleTags)
+	str += fmt.Sprintf("其他：%v", g.MiscTags)
+	return str
 }

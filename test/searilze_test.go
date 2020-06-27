@@ -1,8 +1,10 @@
 package test
 
 import (
+	"HappyHelper"
 	"HappyHelper/ehentai"
 	"github.com/stretchr/testify/assert"
+	"os"
 	"testing"
 )
 
@@ -54,8 +56,22 @@ func TestDeleteData(t *testing.T) {
 		"src": "http://www.foo.com/bar",
 	})
 	assert.NoError(t, err)
-
 	result, err := ehentai.RestoreGallery(src)
 	assert.NoError(t, err)
 	assert.Nil(t, result)
+}
+
+func TestDeleteGallery(t *testing.T) {
+	t.Log(os.Getenv("https_proxy"))
+	parser := ehentai.NewEHParser()
+	snapShot := HappyHelper.NewSnapShot(parser)
+	cancel, err := snapShot.Parse("https://e-hentai.org/g/835164/effdba09ab/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-cancel
+	t.Log(os.TempDir())
+
+	g := parser.DownloadItem.(*ehentai.Gallery)
+	assert.NoError(t, g.Delete())
 }

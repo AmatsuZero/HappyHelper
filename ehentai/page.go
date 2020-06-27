@@ -74,3 +74,11 @@ func (p *Page) Download(dst string) <-chan struct{} {
 		fmt.Println()
 	}, rxgo.WithBufferedChannel(3))
 }
+
+func (p Page) CreteTableQuery() string {
+	return `
+	CREATE TABLE IF NOT EXISTS page (
+    'id' INTEGER PRIMARY KEY AUTOINCREMENT,
+	'src' TEXT NOT NULL UNIQUE,
+	)`
+}
